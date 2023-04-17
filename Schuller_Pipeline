@@ -132,6 +132,12 @@ filtered_shannon_diversity
 filtered_shannon_plot <- ggplot(shannon_diversity, aes(x = shannon_diversity))+ geom_histogram(fill="#69b3a2", color="#e9ecef", alpha=0.9)
 ggsave(filename = "Shannon_Diversity_plot_filtered.pdf", plot = shannon_plot, width = 10, height = 15)
 
+#Read Values at Genus Level
+genus_abundance <- as.data.frame(otu_table(ps_genus))
+genus_taxa <- as.data.frame(tax_table(ps_genus))
+genus_names <- as.list(genus_taxa$Genus)
+colnames(genus_abundance) <- genus_names
+write.csv(file = "Genus_Abundance_Table.csv", genus_abundance)
 
 #To View the Plot Interactively, download the saved workspace image from R to the local machine
 save.image(file = "Schuller_Workspace.RData")
