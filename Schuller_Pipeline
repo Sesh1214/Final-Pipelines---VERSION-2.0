@@ -1,5 +1,9 @@
 #Before starting, make sure to unzip the fastq files. Also do an interactive session and load R/4.2.1. Can use gzip -d command on terminal to do this
 library(dada2)
+library(vegan)
+library(factoextra)
+library(phyloseq)
+library(ape)
 path <- "/gpfs/home/yfe22ruu/Fastq_Stephanie"
 #The list files command should list all the paired end reads for each sample.
 list.files(path)
