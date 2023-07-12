@@ -1,0 +1,236 @@
+#NAMES IN THE WORKFLOW NEED TO BE STANDARDISED
+#Before starting, make sure to unzip the fastq files. Also do an interactive session and load R/4.2.1. Can use gzip -d command on terminal to do this
+library(dada2)
+path <- "/gpfs/scratch/yfe22ruu/May22_files"
+#The list files command should list all the paired end reads for each sample.
+list.files(path)
+
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+
+#Plot the Read Quality for the forward and reverse paired end reads and put them in separate PDFs
+#This part of the code does not work properly in HPC. Have to figure out how to get these plots into a PDF and put that in. Possibly assign each of the plots to variables and then use ggplot? The other option is to do the entire pipelin$
+#pdf(file = "Read_Quality_Profiles.pdf", width = 4, height = 4)
+#plotQualityProfile(fnRs)
+#plotQualityProfile(fnRs)
+#dev.off()
+
+# Place filtered files in filtered/ subdirectory
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, maxN=0, maxEE=c(10,10), minQ=1, truncQ=1, rm.phix=TRUE, compress=TRUE, multithread=FALSE)
+
+print(out)
+
+errF <- learnErrors(filtFs, multithread=FALSE)
+errR <- learnErrors(filtRs, multithread=FALSE)
+
+#pdf(file = "Error_Plots.pdf", width = 4, height = 4)
+#plotErrors(errF, nominalQ=TRUE)
+#plotErrors(errR, nominalQ=TRUE)
+#dev.off()
+
+dadaFs <- dada(filtFs, err=errF, multithread=FALSE)
+dadaRs <- dada(filtRs, err=errR, multithread=FALSE)
+dadaFs[[1]]
+
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+
+table(nchar(getSequences(seqtab)))
+
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=FALSE, verbose=TRUE)
+dim(seqtab.nochim)
+
+sum(seqtab.nochim)/sum(seqtab)
+
+#Track Number of Reads through the pipeline
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+
+db_path = "/gpfs/afm/cancergenetics/Seshadhri/Stephanie_Schuller_Data/GTDB_bac-arc_ssu_r86.fa.gz"
+
+taxa <- assignTaxonomy(seqtab.nochim, db_path, multithread=FALSE)
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+print(taxa.print)
+taxa.print.df <- as.data.frame(taxa.print)
+track.df <- as.data.frame(track)
+seqtab.nochim.df <- as.data.frame(seqtab.nochim)
+save.image(file = "my_work_space.RData")
+write.csv(file = "Taxa_Print.csv", taxa.print.df)
+write.csv(file = "Read_Tracker.csv", track.df)
+write.csv(file = "Seqtab_Nochim.csv", seqtab.nochim.df)
+
+colnames(seqtab.nochim.df) <- c(1:ncol(seqtab.nochim.df))
+colnames(seqtab.nochim.df) <- paste("ASV", colnames(seqtab.nochim.df), sep = "_")
+seqtab.nochim.relative.df <- decostand(seqtab.nochim.df, method='total', MARGIN = 1)
+rownames(taxa.print.df) <- colnames(seqtab.nochim.df)
+taxa.print.matrix <- as.matrix(taxa.print.df)
+metadata.df <- read.csv("Metadata.csv", header = TRUE, row.names = 1)
+
+seqtab.nochim.relative.df <- decostand(seqtab.nochim.df, method='total', MARGIN = 1)
+
+#Preparing and Creating the Phyloseq Object
+otu_tab <- otu_table(seqtab.nochim.relative.df, taxa_are_rows = FALSE)
+sample_dat <- sample_data(metadata.df)
+tax_dat <- tax_table(taxa.print.matrix)
+ps_schuller <- merge_phyloseq(otu_tab, sample_dat, tax_dat)
+rank_names(ps_schuller)
+#Genus Level Phyloseq Object
+ps_genus <- tax_glom(ps_schuller, "Genus")
+p1 <- plot_bar(ps_genus, fill = "Genus")
+ggsave(filename = 'ps_genus.pdf', plot=p1, width=30, height=8)
+
+#ps_schuller_updated <- tax_fix(ps_schuller) %>% phyloseq_validate()
+#ord_explore(ps_schuller_updated)
+
+ps <- ps_schuller
+#Heatmap - SEE IF YOU CAN USE ps_genus AND ps_family FOR THIS
+genus_heatmap <- plot_heatmap(ps, "PCoA", "manhattan", taxa.label = "Genus", taxa.order = "Genus", low = "#66CCFF", high = "#000033", na.value = "white")
+ggsave(filename = "genus_heatmap.pdf", plot = genus_heatmap, width = 30, height = 8)
+
+set.seed(101)
+ps.ord <- ordinate(ps, "PCoA", "manhattan")
+p1 <- plot_ordination(ps, ps.ord, type = "taxa", color = "Genus", title = "Genus Ordination Plot")
+ggsave(filename = "Genus_PCOA.pdf", plot = p1, width = 30, height = 8)
+
+#PCOA Plot After Extracting Co-Ordinates
+class(seqtab.nochim.relative.df)
+seqtab_matrix <- as.matrix(seqtab.nochim.relative.df)
+dist_matrix_genus <- dist(seqtab_matrix, method = "manhattan")
+pcoa_genus <- pcoa(dist_matrix_genus, correction = "none", rn = NULL)
+biplot_genus <- biplot(pcoa_genus, plot.axes = c(1,2), dir.axis1=1, dir.axis2=1, rn = NULL, main = NULL)
+biplot_genus
+#Export the plot you get on RStudio
+
+#get the optimal number of clusters for k-means = 3
+silhouette_score <- function(k){
+  km <- kmeans(seqtab.nochim.relative.df, centers = k, nstart=25)
+  ss <- silhouette(km$cluster, dist(seqtab.nochim.relative.df))
+  mean(ss[, 3])
+}
+k <- 2:10
+avg_sil <- sapply(k, silhouette_score)
+plot(k, type='b', avg_sil, xlab='Number of clusters', ylab='Average Silhouette Scores', frame=FALSE)
+fviz_nbclust(seqtab.nochim.relative.df, kmeans, method='silhouette') #Optimal - 4
+fviz_nbclust(seqtab.nochim.relative.df, kmeans, method='gap_stat') #Optimal - 1 
+fviz_nbclust(seqtab.nochim.relative.df, kmeans, method='wss') #Optimal - 3
+
+#Extract the Axis co-ordinates and do K-Means on them
+pcoa_genus$vectors
+pcoa_coords <- as.data.frame(pcoa_genus$vectors)
+head(pcoa_coords)
+pcoa_coords_final1 <- as.data.frame(pcoa_coords$Axis.1)
+pcoa_coords_final2 <- as.data.frame(pcoa_coords$Axis.2)
+pcoa_coords_genus_final <- cbind(pcoa_coords_final1, pcoa_coords_final2)
+kmeans_genus <- kmeans(pcoa_coords_genus_final, 3, nstart = 20)
+kmeans_genus
+kmeans_plot <- plot(pcoa_coords_genus_final, col = (kmeans_genus$cluster + 1), main = "K-Means Clustering of Samples - May 2022", xlab = "", ylab = "", pch = 20, cex = 2)
+ggsave(filename = "KMeansClustering.pdf", plot = kmeans_plot, width = 30, height = 8)
+
+kmeans_clusterdata <- as.data.frame(kmeans_genus$cluster)
+sample_list <- cbind(kmeans_clusterdata, pcoa_coords_genus_final)
+head(sample_list)
+rownames(seqtab.nochim.df)
+rownames(sample_list) <- rownames(seqtab.nochim.df)
+head(sample_list)
+sample_cluster_list <- cbind(sample_list, metadata.df)
+head(sample_cluster_list)
+sample_cluster_list2 <- sample_cluster_list[, -4]
+sample_cluster_list2 <- sample_cluster_list2[, -10]
+head(sample_cluster_list2)
+write.csv(file = "Sample_Cluster_List.csv", sample_cluster_list2)
+ggplot(sample_cluster_list2, aes(x=pcoa_coords$Axis.1, y=pcoa_coords$Axis.2, color = metastasis)) + geom_point(alpha = 0.5, size = 2) + geom_text(aes(label = rownames(sample_list)))
+
+head(seqtab.nochim.relative.df)
+cluster_list <- data.frame(sample_cluster_list2$`kmeans_genus$cluster`)
+seqtab_cluster <- cbind(cluster_list, seqtab.nochim.relative.df)
+write.csv(file = "Simplified_Sample_Cluster_List.csv", seqtab_cluster)
+
+#Get Abundance Table at Genus Level using the Genus Phyloseq Object
+genus_abundance <- as.data.frame(otu_table(ps_genus))
+genus_taxa <- as.data.frame(tax_table(ps_genus))
+genus_names <- as.list(genus_taxa$Genus)
+colnames(genus_abundance) <- genus_names
+write.csv(file = "Genus_Abundance_Table.csv", genus_abundance)
+genus_abundance_with_cluster <- cbind(sample_cluster_list2$`kmeans_genus$cluster`, genus_abundance)
+colnames(genus_abundance_with_cluster)[1] <- "Clusters"
+write.csv(file = "Genus_Abundance_With_Cluster.csv", genus_abundance_with_cluster)
+
+#Filter out and get three dataframes for the clusters - Right now I am doing this in Excel because for some reason dplyr filter does not work.
+cluster1 <- read.csv("cluster1.csv")
+cluster2 <- read.csv("cluster2.csv")
+cluster3 <- read.csv("cluster3.csv")
+cluster12 <- read.csv("cluster12.csv")
+
+cluster1 <- data.frame(cluster1, row.names = 1)
+cluster2 <- data.frame(cluster2, row.names = 1)
+cluster3 <- data.frame(cluster3, row.names = 1)
+cluster12 <- data.frame(cluster12, row.names = 1)
+
+cluster1 <- data.frame(cluster1[,-1])
+cluster2 <- data.frame(cluster2[,-1])
+cluster3 <- data.frame(cluster3[,-1])
+cluster12 <- data.frame(cluster12[,-1])
+
+wilc_results <- list()
+bacteria_plots <- list()
+
+pdf('Wilcoxon_plots.pdf')
+
+for(i in 1:ncol(cluster3)){
+  print(i)
+  
+  result <- wilcox.test(as.numeric(cluster3[,i]),
+                        as.numeric(cluster12[,i]),
+                        alternative = 'two.sided', paired = F)
+  wilc_results[[i]] <- result$p.value
+  
+  
+  bacteria_plots[[i]] <- ggplot(genus_abundance_with_cluster, aes(y=genus_abundance_with_cluster[,i+1],
+                                                      x=Clusters))+
+    geom_point(alpha=0.6) +
+    geom_boxplot(alpha=0.7, outlier.alpha = 0) +
+    theme_minimal() +
+    scale_y_sqrt() +
+    labs(y=paste0(colnames(genus_abundance_with_cluster)[i+1])) +
+    stat_compare_means()
+  
+  print(bacteria_plots[[i]])
+  
+  
+}
+
+dev.off()
+
+wilc_results <- as.numeric(wilc_results)
+p.adjust.M <- p.adjust.methods
+p.adj <- sapply(p.adjust.M, function(meth) p.adjust(wilc_results, meth))
+head(p.adj)
+str(p.adj)
+p.adj.df <- as.data.frame(p.adj)
+rownames(p.adj.df) <- colnames(cluster3)
+write.csv(p.adj.df, "P_Values_Adjusted.csv")
+head(wilc_results)
+wilc_results.df <- as.data.frame(wilc_results)
+rownames(wilc_results.df) <- colnames(cluster3)
+write.csv(wilc_results.df, "Wilcoxon_Results.csv")
+wilc_results_filtered <- wilc_results.df %>% filter(wilc_results.df$wilc_results < 0.05)
+write.csv(wilc_results_filtered, "Significant_Bacterial_Genera.csv")
+p.adj.filtered <- p.adj.df %>% filter(p.adj.df$fdr < 0.05)
+write.csv(p.adj.filtered, "Significant_Genera_After_MTC.csv")
