@@ -1,6 +1,8 @@
 #NAMES IN THE WORKFLOW NEED TO BE STANDARDISED
 #Before starting, make sure to unzip the fastq files. Also do an interactive session and load R/4.2.1. Can use gzip -d command on terminal to do this
 library(dada2)
+library(phyloseq)
+library(vegan)
 path <- "/gpfs/scratch/yfe22ruu/May22_files"
 #The list files command should list all the paired end reads for each sample.
 list.files(path)
